@@ -1,7 +1,7 @@
-import { ICommonObject, INode, INodeData, INodeOutputsValue, INodeParams } from '../../../src/Interface'
-import { Chroma } from 'langchain/vectorstores/chroma'
-import { Embeddings } from 'langchain/embeddings/base'
+import { Chroma } from '@langchain/community/vectorstores/chroma'
+import { Embeddings } from '@langchain/core/embeddings'
 import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
+import { ICommonObject, INode, INodeData, INodeOutputsValue, INodeParams } from '../../../src/Interface'
 import { ChromaExtended } from './core'
 
 class Chroma_Existing_VectorStores implements INode {
@@ -12,6 +12,7 @@ class Chroma_Existing_VectorStores implements INode {
     type: string
     icon: string
     category: string
+    badge: string
     baseClasses: string[]
     inputs: INodeParams[]
     credential: INodeParams
@@ -26,6 +27,7 @@ class Chroma_Existing_VectorStores implements INode {
         this.category = 'Vector Stores'
         this.description = 'Load existing index from Chroma (i.e: Document has been upserted)'
         this.baseClasses = [this.type, 'VectorStoreRetriever', 'BaseRetriever']
+        this.badge = 'DEPRECATING'
         this.credential = {
             label: 'Connect Credential',
             name: 'credential',
@@ -50,6 +52,13 @@ class Chroma_Existing_VectorStores implements INode {
                 name: 'chromaURL',
                 type: 'string',
                 optional: true
+            },
+            {
+                label: 'Chroma Metadata Filter',
+                name: 'chromaMetadataFilter',
+                type: 'json',
+                optional: true,
+                additionalParams: true
             },
             {
                 label: 'Top K',
@@ -86,13 +95,20 @@ class Chroma_Existing_VectorStores implements INode {
         const credentialData = await getCredentialData(nodeData.credential ?? '', options)
         const chromaApiKey = getCredentialParam('chromaApiKey', credentialData, nodeData)
 
+        const chromaMetadataFilter = nodeData.inputs?.chromaMetadataFilter
+
         const obj: {
             collectionName: string
             url?: string
             chromaApiKey?: string
+            filter?: object | undefined
         } = { collectionName }
         if (chromaURL) obj.url = chromaURL
         if (chromaApiKey) obj.chromaApiKey = chromaApiKey
+        if (chromaMetadataFilter) {
+            const metadatafilter = typeof chromaMetadataFilter === 'object' ? chromaMetadataFilter : JSON.parse(chromaMetadataFilter)
+            obj.filter = metadatafilter
+        }
 
         const vectorStore = await ChromaExtended.fromExistingCollection(embeddings, obj)
 
@@ -101,6 +117,9 @@ class Chroma_Existing_VectorStores implements INode {
             return retriever
         } else if (output === 'vectorStore') {
             ;(vectorStore as any).k = k
+            if (chromaMetadataFilter) {
+                ;(vectorStore as any).filter = obj.filter
+            }
             return vectorStore
         }
         return vectorStore

@@ -1,11 +1,13 @@
-import { ICommonObject, INode, INodeData, INodeParams, PromptTemplate } from '../../../src/Interface'
-import { AgentExecutor } from 'langchain/agents'
-import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
-import { LoadPyodide, finalSystemPrompt, systemPrompt } from './core'
-import { LLMChain } from 'langchain/chains'
-import { BaseLanguageModel } from 'langchain/base_language'
-import { ConsoleCallbackHandler, CustomChainHandler } from '../../../src/handler'
 import axios from 'axios'
+import { BaseLanguageModel } from '@langchain/core/language_models/base'
+import { AgentExecutor } from 'langchain/agents'
+import { LLMChain } from 'langchain/chains'
+import { ICommonObject, INode, INodeData, INodeParams, PromptTemplate } from '../../../src/Interface'
+import { getBaseClasses, getCredentialData, getCredentialParam } from '../../../src/utils'
+import { ConsoleCallbackHandler, CustomChainHandler, additionalCallbacks } from '../../../src/handler'
+import { LoadPyodide, finalSystemPrompt, systemPrompt } from './core'
+import { checkInputs, Moderation } from '../../moderation/Moderation'
+import { formatResponse } from '../../outputparsers/OutputParserHelpers'
 
 class Airtable_Agents implements INode {
     label: string
@@ -22,7 +24,7 @@ class Airtable_Agents implements INode {
     constructor() {
         this.label = 'Airtable Agent'
         this.name = 'airtableAgent'
-        this.version = 1.0
+        this.version = 2.0
         this.type = 'AgentExecutor'
         this.category = 'Agents'
         this.icon = 'airtable.svg'
@@ -71,6 +73,14 @@ class Airtable_Agents implements INode {
                 default: 100,
                 additionalParams: true,
                 description: 'Number of results to return'
+            },
+            {
+                label: 'Input Moderation',
+                description: 'Detect text that could generate harmful output and prevent it from being sent to the language model',
+                name: 'inputModeration',
+                type: 'Moderation',
+                optional: true,
+                list: true
             }
         ]
     }
@@ -80,12 +90,24 @@ class Airtable_Agents implements INode {
         return undefined
     }
 
-    async run(nodeData: INodeData, input: string, options: ICommonObject): Promise<string> {
+    async run(nodeData: INodeData, input: string, options: ICommonObject): Promise<string | object> {
         const model = nodeData.inputs?.model as BaseLanguageModel
         const baseId = nodeData.inputs?.baseId as string
         const tableId = nodeData.inputs?.tableId as string
         const returnAll = nodeData.inputs?.returnAll as boolean
         const limit = nodeData.inputs?.limit as string
+        const moderations = nodeData.inputs?.inputModeration as Moderation[]
+
+        if (moderations && moderations.length > 0) {
+            try {
+                // Use the output of the moderation chain as input for the Vectara chain
+                input = await checkInputs(moderations, input)
+            } catch (e) {
+                await new Promise((resolve) => setTimeout(resolve, 500))
+                //streamResponse(options.socketIO && options.socketIOClientId, e.message, options.socketIO, options.socketIOClientId)
+                return formatResponse(e.message)
+            }
+        }
 
         const credentialData = await getCredentialData(nodeData.credential ?? '', options)
         const accessToken = getCredentialParam('accessToken', credentialData, nodeData)
@@ -102,6 +124,7 @@ class Airtable_Agents implements INode {
 
         const loggerHandler = new ConsoleCallbackHandler(options.logger)
         const handler = new CustomChainHandler(options.socketIO, options.socketIOClientId)
+        const callbacks = await additionalCallbacks(nodeData, options)
 
         const pyodide = await LoadPyodide()
 
@@ -141,7 +164,7 @@ json.dumps(my_dict)`
                 dict: dataframeColDict,
                 question: input
             }
-            const res = await chain.call(inputs, [loggerHandler])
+            const res = await chain.call(inputs, [loggerHandler, ...callbacks])
             pythonCode = res?.text
         }
 
@@ -169,10 +192,10 @@ json.dumps(my_dict)`
             }
 
             if (options.socketIO && options.socketIOClientId) {
-                const result = await chain.call(inputs, [loggerHandler, handler])
+                const result = await chain.call(inputs, [loggerHandler, handler, ...callbacks])
                 return result?.text
             } else {
-                const result = await chain.call(inputs, [loggerHandler])
+                const result = await chain.call(inputs, [loggerHandler, ...callbacks])
                 return result?.text
             }
         }
